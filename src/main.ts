@@ -19,13 +19,6 @@ const extractLinkTarget = (value: unknown): string | undefined => {
 /**
  * Convert multiline YAML arrays to single-line format inside frontmatter.
  *
- * ```yaml
- * field:
- *   - "[[A]]"
- *   - "[[B]]"
- * ```
- * becomes `field: ["[[A]]", "[[B]]"]`
- *
  * Single-item arrays become scalars: `field: "[[A]]"`
  * Empty arrays stay as `field:`
  */
@@ -67,7 +60,6 @@ const normalizeArraysInFrontmatter = (
       }
 
       if (j > i + 1) {
-        // Consumed array items → was a multiline array
         changed = true;
         count++;
         if (items.length === 0) {
@@ -112,7 +104,7 @@ const addFrontmatterField = (
 
 /**
  * Wrap specified inline fields on a task line with %% comments.
- * Skips fields that are already inside %% blocks.
+ * Skips fields already inside %% blocks.
  */
 const hideTaskAttributes = (line: string, hiddenAttrs: string[]): string => {
   let result = line;
@@ -150,114 +142,121 @@ export default class VaultAuditPlugin extends Plugin {
   }
 
   async runAudit() {
+    const { rules, hiddenAttributes } = this.settings;
     const files = this.app.vault.getMarkdownFiles();
     const stats = { prevNext: 0, arrays: 0, fields: 0, attrs: 0 };
 
-    // --- Phase 1: build prev/next map from metadata cache ---
-    const prevNextMap = new Map<
-      string,
-      { prev?: string; next?: string }
-    >();
-
-    for (const file of files) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      const fm = cache?.frontmatter;
-      if (!fm) continue;
-
-      const prev = extractLinkTarget(fm.prev);
-      const next = extractLinkTarget(fm.next);
-      if (prev || next) {
-        prevNextMap.set(file.basename, { prev, next });
-      }
-    }
-
-    // --- Phase 2: determine missing prev/next links ---
+    // --- Phase 1: build prev/next fix map (only if rule enabled) ---
     const fixes = new Map<string, { addPrev?: string; addNext?: string }>();
 
-    for (const [basename, links] of prevNextMap) {
-      if (links.next) {
-        const target = prevNextMap.get(links.next);
-        if (!target || target.prev !== basename) {
-          // Target file exists but doesn't point back
-          const targetFile = files.find((f) => f.basename === links.next);
-          if (targetFile) {
-            const existing = fixes.get(links.next) ?? {};
-            existing.addPrev = basename;
-            fixes.set(links.next, existing);
-          }
+    if (rules.pairPrevNext) {
+      const prevNextMap = new Map<
+        string,
+        { prev?: string; next?: string }
+      >();
+
+      for (const file of files) {
+        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        if (!fm) continue;
+
+        const prev = extractLinkTarget(fm.prev);
+        const next = extractLinkTarget(fm.next);
+        if (prev || next) {
+          prevNextMap.set(file.basename, { prev, next });
         }
       }
-      if (links.prev) {
-        const target = prevNextMap.get(links.prev);
-        if (!target || target.next !== basename) {
-          const targetFile = files.find((f) => f.basename === links.prev);
-          if (targetFile) {
-            const existing = fixes.get(links.prev) ?? {};
-            existing.addNext = basename;
-            fixes.set(links.prev, existing);
+
+      for (const [basename, links] of prevNextMap) {
+        if (links.next) {
+          const target = prevNextMap.get(links.next);
+          if (!target || target.prev !== basename) {
+            if (files.find((f) => f.basename === links.next)) {
+              const existing = fixes.get(links.next) ?? {};
+              existing.addPrev = basename;
+              fixes.set(links.next, existing);
+            }
+          }
+        }
+        if (links.prev) {
+          const target = prevNextMap.get(links.prev);
+          if (!target || target.next !== basename) {
+            if (files.find((f) => f.basename === links.prev)) {
+              const existing = fixes.get(links.prev) ?? {};
+              existing.addNext = basename;
+              fixes.set(links.prev, existing);
+            }
           }
         }
       }
     }
 
-    // --- Phase 3: process every file in one vault.process() each ---
-    const hiddenAttrs = this.settings.hiddenAttributes;
+    // --- Phase 2: process files (skip unchanged) ---
+    const doArrays = rules.normalizeArrays;
+    const doAttrs = rules.hideTaskAttributes && hiddenAttributes.length > 0;
 
     for (const file of files) {
       const fileFixes = fixes.get(file.basename);
+      const content = await this.app.vault.cachedRead(file);
+      let modified = content;
 
-      await this.app.vault.process(file, (content) => {
-        let modified = content;
-
-        // 1. Normalize multiline arrays
+      // 1. Normalize multiline arrays
+      if (doArrays) {
         const arrayResult = normalizeArraysInFrontmatter(modified);
         if (arrayResult.changed) {
           modified = arrayResult.content;
           stats.arrays++;
           stats.fields += arrayResult.count;
         }
+      }
 
-        // 2. Add missing prev/next
-        if (fileFixes) {
-          if (fileFixes.addPrev) {
-            modified = addFrontmatterField(
-              modified,
-              "prev",
-              `"[[${fileFixes.addPrev}]]"`
-            );
-            stats.prevNext++;
-          }
-          if (fileFixes.addNext) {
-            modified = addFrontmatterField(
-              modified,
-              "next",
-              `"[[${fileFixes.addNext}]]"`
-            );
-            stats.prevNext++;
-          }
+      // 2. Add missing prev/next
+      if (fileFixes) {
+        if (fileFixes.addPrev) {
+          modified = addFrontmatterField(
+            modified,
+            "prev",
+            `"[[${fileFixes.addPrev}]]"`
+          );
+          stats.prevNext++;
         }
+        if (fileFixes.addNext) {
+          modified = addFrontmatterField(
+            modified,
+            "next",
+            `"[[${fileFixes.addNext}]]"`
+          );
+          stats.prevNext++;
+        }
+      }
 
-        // 3. Hide task inline attributes
-        if (hiddenAttrs.length > 0) {
-          const lines = modified.split("\n");
-          for (let i = 0; i < lines.length; i++) {
-            if (/^\s*- \[.\]/.test(lines[i])) {
-              const newLine = hideTaskAttributes(lines[i], hiddenAttrs);
-              if (newLine !== lines[i]) {
-                lines[i] = newLine;
-                stats.attrs++;
-              }
+      // 3. Hide task inline attributes
+      if (doAttrs) {
+        const lines = modified.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+          if (/^\s*- \[.\]/.test(lines[i])) {
+            const newLine = hideTaskAttributes(lines[i], hiddenAttributes);
+            if (newLine !== lines[i]) {
+              lines[i] = newLine;
+              stats.attrs++;
             }
           }
-          modified = lines.join("\n");
         }
+        modified = lines.join("\n");
+      }
 
-        return modified;
-      });
+      // Only write if something actually changed
+      if (modified !== content) {
+        await this.app.vault.process(file, () => modified);
+      }
     }
 
-    new Notice(
-      `Audit done: ${stats.prevNext} prev/next, ${stats.arrays} files (${stats.fields} fields) normalized, ${stats.attrs} attrs hidden`
-    );
+    // --- Results ---
+    const parts: string[] = [];
+    if (rules.pairPrevNext) parts.push(`${stats.prevNext} prev/next`);
+    if (doArrays)
+      parts.push(`${stats.arrays} files (${stats.fields} fields) normalized`);
+    if (doAttrs) parts.push(`${stats.attrs} attrs hidden`);
+
+    new Notice(`Audit done: ${parts.join(", ")}`);
   }
 }
