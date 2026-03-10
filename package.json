@@ -1,6 +1,6 @@
 {
   "name": "vault-audit",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Audits vault metadata: fixes one-way prev/next links, normalizes multiline YAML arrays, and hides task inline attributes.",
   "main": "main.js",
   "scripts": {
