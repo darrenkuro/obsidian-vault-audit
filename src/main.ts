@@ -52,7 +52,7 @@ const normalizeArraysInFrontmatter = (
         const itemMatch = lines[j].match(/^\s+-\s*(.*)/);
         if (itemMatch) {
           const value = itemMatch[1].trim();
-          if (value && value !== '"[[]]"' && value !== "[[]]") {
+          if (value) {
             items.push(value);
           }
         }
