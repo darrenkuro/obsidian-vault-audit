@@ -1,0 +1,28 @@
+{
+  "name": "vault-audit",
+  "version": "0.1.0",
+  "description": "Audits vault metadata: fixes one-way prev/next links, normalizes multiline YAML arrays, and hides task inline attributes.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "lint": "eslint src/",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "keywords": [],
+  "author": "Darren Kuro",
+  "license": "MIT",
+  "devDependencies": {
+    "eslint-plugin-obsidianmd": "^0.1.9",
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "builtin-modules": "^4.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.0.0",
+    "obsidian": "latest",
+    "tslib": "^2.7.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0"
+  }
+}
